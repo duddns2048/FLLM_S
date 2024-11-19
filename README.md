@@ -92,9 +92,8 @@
 - 기본 사용법을 예시와 함께 보여주세요.
 
 ## 구조
-```
 
-project-root/
+.project-root/
   ├── src/
   │   ├── main.py
   │   └── helper.py
@@ -102,7 +101,6 @@ project-root/
   ├── README.md
   └── requirements.txt
   
-```
 
 ## 기여 방법
 - 기여 규칙을 참고해 주세요.
