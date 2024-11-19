@@ -5,3 +5,4 @@
 *.tar
 *.json
 dataset/
+*.txt
