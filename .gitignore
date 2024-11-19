@@ -1,0 +1,7 @@
+*.nii.gz
+*.png
+*.csv
+*.pth
+*.tar
+*.json
+dataset/
