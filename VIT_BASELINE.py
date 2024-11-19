@@ -410,12 +410,15 @@ import matplotlib.pyplot as plt
 
 def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16), resume=False, checkpoint_path=None):
     seed_torch()
+    gpu_ids = [int(id) for id in args.gpu_ids.split(',')]
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:' + str(gpu_ids[0]) if torch.cuda.is_available() else 'cpu')
+    
     os.makedirs(save_path, exist_ok=True)
     save_path = os.path.join(save_path, exp_name)
     os.makedirs(save_path, exist_ok=True)
     with open(os.path.join(save_path,'args.json'), 'w') as json_file:
         json.dump(args_dict, json_file, indent=4)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Dataset initialization (Add your dataset code here)
     dataset = MyDataset(data_dir, data_file, image_size)
@@ -431,7 +434,9 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     # Instantiate VisionTransformerForSegmentation (Add your model initialization code here)
     vit_args = dataclasses.asdict(VisionTransformerArgs(image_size=image_size,patch_size=patch_size))
     model = VisionTransformerForSegmentation(**vit_args).to(device)
-
+    if len(gpu_ids) > 1:
+        model = nn.DataParallel(model, device_ids=gpu_ids)
+    
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
@@ -611,6 +616,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--image_size', type=str, required=True, action=TupleAction, help='Input size in the format "16,16,4"')
     parser.add_argument('--patch_size', type=str, required=True, action=TupleAction, help='Patch size in the format "16,16,4"')
+    parser.add_argument('--gpu_ids', type=str, required=True, help='Comma-separated list of GPU IDs to use')
 
     args = parser.parse_args()
     
