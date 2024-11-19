@@ -93,6 +93,7 @@
 
 ## 구조
 ```
+
 project-root/
   ├── src/
   │   ├── main.py
@@ -100,6 +101,7 @@ project-root/
   ├── tests/
   ├── README.md
   └── requirements.txt
+  
 ```
 
 ## 기여 방법
