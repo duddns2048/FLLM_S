@@ -161,7 +161,21 @@ def save_predictions(epoch, video, target, output, save_dir='./predictions'):
     save_path = os.path.join(save_dir, f'epoch_{epoch}.png')
     plt.savefig(save_path, bbox_inches='tight')
     plt.close(fig)  # Close the figure to free memory
-
+    
+def plot_csv(df, save_path, exp_name, plot):
+    plt.figure(figsize=(10, 5))
+    plt.plot(df['Epoch'], df[f'Train {plot}'], label=f'Train {plot}')
+    plt.plot(df['Epoch'], df[f'Val {plot}'], label=f'Val {plot}')
+    plt.xlabel('Epoch')
+    plt.ylabel(f'{plot}')
+    plt.title(f'{exp_name}_{plot}')
+    plt.legend()
+    plt.grid(True)
+    dice_plot_path = os.path.join(save_path, f'{exp_name}_{plot}_curve.png')
+    plt.savefig(dice_plot_path)
+    logger.info(f"Dice curve saved to {dice_plot_path}")
+    plt.close()
+    
 class DiceLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(DiceLoss, self).__init__()
@@ -261,6 +275,8 @@ class MyDataset(Dataset):
 
     def __getitem__(self, index):
         x_path, y_path = self.img_label_plist[index]
+        # x_path = self.img_label_plist[index]['image']
+        # y_path = self.img_label_plist[index]['label']
         img_x = get_img(os.path.join(self.data_dir, x_path)).astype(np.float32)
         img_y = get_img(os.path.join(self.data_dir, y_path)).astype(np.float32)
         
@@ -453,7 +469,9 @@ def generate_save_path(task_name, patch_size, batch_size, lr, epoch=None):
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16)):
+def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16)):
+    os.makedirs(save_path, exist_ok=True)
+    save_path = os.path.join(save_path, exp_name)
     os.makedirs(save_path, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -506,6 +524,7 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
 
         epoch_loss = total_loss / len(train_dataloader)
         epoch_dice = total_dice / len(train_dataloader)
+        print(f"Epoch [{epoch + 1}/{epochs}], Train Loss: {epoch_loss:.4f}, Train Dice: {epoch_dice:.4f}")
 
         # Validation loop
         model.eval()
@@ -526,12 +545,23 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
 
         val_loss /= len(val_dataloader)
         val_dice /= len(val_dataloader)
+        print(f"Epoch [{epoch + 1}/{epochs}], Val  Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}")
 
         logger.info(f"Epoch [{epoch + 1}/{epochs}], Loss: {epoch_loss:.4f}, Val Loss: {val_loss:.4f}, Train Dice: {epoch_dice:.4f}, Val Dice: {val_dice:.4f}")
 
         # Store the results
         epoch_data.append([epoch + 1, epoch_loss, val_loss, epoch_dice, val_dice])
 
+        df = pd.DataFrame(epoch_data, columns=['Epoch', 'Train Loss', 'Val Loss', 'Train Dice', 'Val Dice'])
+        csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
+        df.to_csv(csv_path, index=False)
+        logger.info(f"Training results saved to {csv_path}")
+        
+        # plot_graph(data_dir, exp_name, epoch_data[:,1], epoch_data[:,2],'Loss')
+        # plot_graph(data_dir, exp_name, epoch_data[:,3], epoch_data[:,4],'Dice')
+        plot_csv(df, save_path, exp_name, 'Dice')
+        plot_csv(df, save_path, exp_name, 'Loss')
+        
         scheduler.step(epoch_loss)
         current_lr = scheduler.optimizer.param_groups[0]['lr']
         logger.info(f"Learning Rate: {current_lr:.6f}")
@@ -544,7 +574,7 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
                 'epoch': epoch,
                 'best_loss': best_loss
             }
-            model_save_path = generate_save_path(task_name, patch_size, batch_size, lr)
+            model_save_path = generate_save_path(exp_name, patch_size, batch_size, lr)
             torch.save(state_dict, model_save_path)
             logger.info(f"Model saved at {model_save_path} (Best Loss: {best_loss:.4f})")
 
@@ -553,14 +583,14 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
                 video, target = next(iter(train_dataloader))
                 video, target = video.to(device), target.to(device)
                 output = model(video.float())
-                prediction_save_path = generate_save_path(task_name, patch_size, batch_size, lr, epoch)
+                prediction_save_path = generate_save_path(exp_name, patch_size, batch_size, lr, epoch)
                 save_predictions(epoch, video, target, output, prediction_save_path)
 
     # Convert the epoch data to a DataFrame
     df = pd.DataFrame(epoch_data, columns=['Epoch', 'Train Loss', 'Val Loss', 'Train Dice', 'Val Dice'])
 
     # Save the DataFrame to a CSV file
-    csv_path = os.path.join(save_path, f'{task_name}_training_results.csv')
+    csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
     df.to_csv(csv_path, index=False)
     logger.info(f"Training results saved to {csv_path}")
 
@@ -573,7 +603,7 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
     plt.title('Training and Validation Loss')
     plt.legend()
     plt.grid(True)
-    loss_plot_path = os.path.join(save_path, f'{task_name}_loss_curve.png')
+    loss_plot_path = os.path.join(save_path, f'{exp_name}_loss_curve.png')
     plt.savefig(loss_plot_path)
     logger.info(f"Loss curve saved to {loss_plot_path}")
     plt.show()
@@ -587,7 +617,7 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
     plt.title('Training and Validation Dice Score')
     plt.legend()
     plt.grid(True)
-    dice_plot_path = os.path.join(save_path, f'{task_name}_dice_curve.png')
+    dice_plot_path = os.path.join(save_path, f'{exp_name}_dice_curve.png')
     plt.savefig(dice_plot_path)
     logger.info(f"Dice curve saved to {dice_plot_path}")
     plt.show()
@@ -596,22 +626,23 @@ def train_model(data_dir, data_file, save_path, task_name, epochs=100, lr=0.01, 
 # Example of how to run the script with the task name included
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--exp_name', type=str, required=True, help='Name of the task')
     parser.add_argument('--data_dir', type=str, required=True, help='Directory containing the data')
     parser.add_argument('--data_file', type=str, required=True, help='File containing the data paths')
+    parser.add_argument('--save_path', type=str, required=False, default='./results' ,help='Save Directory Path ')
     parser.add_argument('--lr', type=float, required=True, help='Learning rate')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
     parser.add_argument('--image_size', type=str, required=True, action=TupleAction, help='Input size in the format "16,16,4"')
     parser.add_argument('--patch_size', type=str, required=True, action=TupleAction, help='Patch size in the format "16,16,4"')
-    parser.add_argument('--task_name', type=str, required=True, help='Name of the task')
 
     args = parser.parse_args()
 
     train_model(
+        exp_name=args.exp_name,
         data_dir=args.data_dir,
         data_file=args.data_file,
-        save_path=args.task_name,
-        task_name=args.task_name,
+        save_path=args.save_path,
         epochs=args.epochs,
         lr=args.lr,
         batch_size=args.batch_size,
