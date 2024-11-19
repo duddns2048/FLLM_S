@@ -17,6 +17,8 @@ from torch.autograd import Variable
 import logging
 import json
 from tqdm import tqdm
+import csv
+import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +32,7 @@ class TupleAction(argparse.Action):
         setattr(namespace, self.dest, tuple(map(int, values.split(','))))
 
 def save_predictions(epoch, video, target, output, save_dir='./predictions'):
-    os.makedirs(save_dir, exist_ok=True)
+    # os.makedirs(save_dir, exist_ok=True)
 
     # Calculate the middle slice index
     middle_slice = video.shape[-1] // 2
@@ -57,6 +59,7 @@ def save_predictions(epoch, video, target, output, save_dir='./predictions'):
 
     save_path = os.path.join(save_dir, f'epoch_{epoch}.png')
     plt.savefig(save_path, bbox_inches='tight')
+    # plt.savefig(save_dir, bbox_inches='tight')
     plt.close(fig)  # Close the figure to free memory
 
 def plot_graph(save_dir, exp_name, train_losses, valid_losses, plot):
@@ -169,8 +172,30 @@ def get_img(img_path):
 def save_img(img, save_path):
     img_itk = sitk.GetImageFromArray(img)
     sitk.WriteImage(img_itk, save_path)
+    
+def load_training_results(csv_path):
+    epoch_data_list=[]
+    with open(csv_path, 'r') as csv_file:
+        csv_reader = csv.reader(csv_file)
+        
+        # 첫 번째 행 (헤더) 건너뛰기
+        next(csv_reader)
+        
+        # 각 행을 리스트로 처리하고 data_list에 추가
+        for row in csv_reader:
+            epoch_data_list.append(row)
+    return epoch_data_list
 
 
+def seed_torch(seed=42):
+    torch.manual_seed(seed) # CPU 연산관련
+    torch.cuda.manual_seed(seed) # 단일 GPU 연산관련
+    torch.cuda.manual_seed_all(seed) # 멀티 GPU 연산관련
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed) # 넘파이 고정
+    random.seed(seed) # 파이썬 고정
+    
 # Dataset class
 
 class MyDataset(Dataset):
@@ -179,6 +204,7 @@ class MyDataset(Dataset):
         self.data_dir = data_dir
         self.data_file_dir = os.path.join(data_dir,data_file)
         self.img_label_plist = get_img_label_paths(self.data_file_dir)
+        self.img_label_plist = self.img_label_plist[:10]
         self.input_shape = image_size
         self.transforms = transforms
         self.target_transforms = target_transforms
@@ -358,19 +384,37 @@ class VisionTransformerArgs:
 
 
 # Function to generate save path with the task name
-def generate_save_path(exp_name, patch_size, batch_size, lr, epoch=None):
+def _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch, pred=None):
     base_name = f"{exp_name}_{patch_size}_{batch_size}_{lr}"
-    if epoch is not None:
-        return f"./predictions/{base_name}_epoch_{epoch}.png"
-    return f"./new_model_{base_name}.pth"
+    if pred is not None:
+        os.makedirs(f"{save_path}/predictions/", exist_ok=True)
+        return f"{save_path}/predictions/{base_name}_epoch_{epoch}.png"
+    return f"{save_path}/new_model_{exp_name}_{patch_size}_{batch_size}_{lr}_e{epoch}.pth"
+
+def generate_save_path(save_path, exp_name,  epoch, mode =None):
+    if mode == 'Loss':
+        output_path = os.path.join(save_path, f'Best_Loss_Model_{exp_name}.pth')
+    elif mode == 'Dice':
+        output_path = os.path.join(save_path, f'Best_Dice_Model_{exp_name}.pth')
+    elif mode == 'last':
+        output_path = os.path.join(save_path, f'last_model_{exp_name}.pth')
+    elif mode == 'pred':
+        output_path = os.path.join(save_path, 'predictions')
+    else:
+        raise ValueError("Invalid mode. Please use 'Loss', 'Dice', 'last' or 'pred'.")
+    return output_path
+        
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16)):
+def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16), resume=False, checkpoint_path=None):
+    seed_torch()
     os.makedirs(save_path, exist_ok=True)
     save_path = os.path.join(save_path, exp_name)
     os.makedirs(save_path, exist_ok=True)
+    with open(os.path.join(save_path,'args.json'), 'w') as json_file:
+        json.dump(args_dict, json_file, indent=4)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Dataset initialization (Add your dataset code here)
@@ -391,13 +435,30 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
-
+    
     best_loss = float('inf')
-
+    best_dice = -float('inf')
+    start_epoch = 0
+    
     # Initialize lists to store loss and Dice scores
     epoch_data = []
+    csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
+    
+    if resume:
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_loss = checkpoint['best_loss']
+        best_dice = checkpoint['best_dice']
+        # epoch_data = load_training_results(csv_path)
+        # epoch_data = epoch_data[:start_epoch]
+        epoch_data = checkpoint['epoch_data']
+        print(f"Resuming training from epoch {start_epoch} with best loss {best_loss:.4f}")
 
-    for epoch in range(epochs):
+
+
+    for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0.0
         total_dice = 0.0
@@ -464,32 +525,47 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
         current_lr = scheduler.optimizer.param_groups[0]['lr']
         logger.info(f"Learning Rate: {current_lr:.6f}")
 
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            state_dict = {
+        
+        state_dict = {
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': epoch,
-                'best_loss': best_loss
+                'best_loss': best_loss,
+                'best_dice': best_dice,
+                'epoch_data' : epoch_data
             }
-            model_save_path = generate_save_path(exp_name, patch_size, batch_size, lr)
-            torch.save(state_dict, model_save_path)
-            logger.info(f"Model saved at {model_save_path} (Best Loss: {best_loss:.4f})")
+        last_model_save_path = generate_save_path(save_path, exp_name, epoch, 'last')
+        torch.save(state_dict, last_model_save_path)
+        logger.info(f"Last Model saved at {last_model_save_path}")
+        
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            # model_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch)
+            best_loss_model_save_path = generate_save_path(save_path, exp_name, epoch, 'Loss')
+            torch.save(state_dict, best_loss_model_save_path)
+            logger.info(f"Best Loss Model saved at {best_loss_model_save_path} (Best Loss: {best_loss:.4f})")
+            
+        if epoch_dice > best_dice:
+            best_dice = epoch_dice
+            # model_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch)
+            best_dice_model_save_path = generate_save_path(save_path, exp_name, epoch, 'Dice')
+            torch.save(state_dict, best_dice_model_save_path)
+            logger.info(f"Best Dice Model saved at {best_dice_model_save_path} (Best Doss: {best_dice:.4f})")
 
         if epoch % 10 == 0:
             with torch.no_grad():
                 video, target = next(iter(train_dataloader))
                 video, target = video.to(device), target.to(device)
                 output = model(video.float())
-                prediction_save_path = generate_save_path(exp_name, patch_size, batch_size, lr, epoch)
+                # prediction_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch, True)
+                prediction_save_path = generate_save_path(save_path, exp_name, epoch, 'pred')
                 save_predictions(epoch, video, target, output, prediction_save_path)
 
     # Convert the epoch data to a DataFrame
-    df = pd.DataFrame(epoch_data, columns=['Epoch', 'Train Loss', 'Val Loss', 'Train Dice', 'Val Dice'])
-
-    # Save the DataFrame to a CSV file
-    csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
-    df.to_csv(csv_path, index=False)
+    # df = pd.DataFrame(epoch_data, columns=['Epoch', 'Train Loss', 'Val Loss', 'Train Dice', 'Val Dice'])
+    # csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
+    # df.to_csv(csv_path, index=False)
+    
     logger.info(f"Training results saved to {csv_path}")
 
     # Plot the training and validation loss
@@ -525,6 +601,8 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, required=True, help='Name of the task')
+    parser.add_argument('--resume', action='store_true', help="Use this flag to enable GPU usage")
+    parser.add_argument('--checkpoint_path', type=str, default=None, help='Checkpoint_path')
     parser.add_argument('--data_dir', type=str, required=True, help='Directory containing the data')
     parser.add_argument('--data_file', type=str, required=True, help='File containing the data paths')
     parser.add_argument('--save_path', type=str, required=False, default='./results' ,help='Save Directory Path ')
@@ -535,6 +613,8 @@ if __name__ == "__main__":
     parser.add_argument('--patch_size', type=str, required=True, action=TupleAction, help='Patch size in the format "16,16,4"')
 
     args = parser.parse_args()
+    
+    args_dict = vars(args)
 
     train_model(
         exp_name=args.exp_name,
@@ -546,6 +626,8 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         image_size=args.image_size,
         patch_size=args.patch_size,
+        resume = args.resume,
+        checkpoint_path = args.checkpoint_path
     )
 
 # python VIT_BASELINE.py --data_dir /path/to/data --data_file /path/to/data_file.txt --image_size 128,128,128 --patch_size 16,16,16 --epochs 100 --batch_size 4 --lr 3e-4 --exp_name 'Task01_BrainTumour'
