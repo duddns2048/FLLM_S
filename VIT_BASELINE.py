@@ -204,7 +204,7 @@ class MyDataset(Dataset):
         self.data_dir = data_dir
         self.data_file_dir = os.path.join(data_dir,data_file)
         self.img_label_plist = get_img_label_paths(self.data_file_dir)
-        self.img_label_plist = self.img_label_plist[:10]
+        # self.img_label_plist = self.img_label_plist[:20]
         self.input_shape = image_size
         self.transforms = transforms
         self.target_transforms = target_transforms
@@ -400,6 +400,7 @@ def generate_save_path(save_path, exp_name,  epoch, mode =None):
         output_path = os.path.join(save_path, f'last_model_{exp_name}.pth')
     elif mode == 'pred':
         output_path = os.path.join(save_path, 'predictions')
+        os.makedirs(output_path, exist_ok=True)
     else:
         raise ValueError("Invalid mode. Please use 'Loss', 'Dice', 'last' or 'pred'.")
     return output_path
@@ -409,7 +410,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16), resume=False, checkpoint_path=None):
-    seed_torch()
+    # seed_torch()
     gpu_ids = [int(id) for id in args.gpu_ids.split(',')]
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cuda:' + str(gpu_ids[0]) if torch.cuda.is_available() else 'cpu')
@@ -434,8 +435,8 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     # Instantiate VisionTransformerForSegmentation (Add your model initialization code here)
     vit_args = dataclasses.asdict(VisionTransformerArgs(image_size=image_size,patch_size=patch_size))
     model = VisionTransformerForSegmentation(**vit_args).to(device)
-    if len(gpu_ids) > 1:
-        model = nn.DataParallel(model, device_ids=gpu_ids)
+    # if len(gpu_ids) > 1:
+    #     model = nn.DataParallel(model, device_ids=gpu_ids)
     
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
