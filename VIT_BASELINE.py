@@ -409,21 +409,24 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16), resume=False, checkpoint_path=None):
-    # seed_torch()
-    gpu_ids = [int(id) for id in args.gpu_ids.split(',')]
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device('cuda:' + str(gpu_ids[0]) if torch.cuda.is_available() else 'cpu')
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(os.path.join(save_path), exist_ok=True)
+    os.makedirs(os.path.join(save_path, exp_name), exist_ok=True)
     save_path = os.path.join(save_path, exp_name)
-    os.makedirs(save_path, exist_ok=True)
+    
     with open(os.path.join(save_path,'args.json'), 'w') as json_file:
         json.dump(args_dict, json_file, indent=4)
+    
+    command_line_arguments = ' '.join(sys.argv)
+    with open(os.path.join(save_path, './train_command.txt'), 'w') as f:
+        f.write(command_line_arguments)
 
     # Dataset initialization (Add your dataset code here)
     dataset = MyDataset(data_dir, data_file, image_size)
 
     # Split dataset into training and validation sets
+    # torch.manual_seed(2024)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
@@ -434,8 +437,6 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     # Instantiate VisionTransformerForSegmentation (Add your model initialization code here)
     vit_args = dataclasses.asdict(VisionTransformerArgs(image_size=image_size,patch_size=patch_size))
     model = VisionTransformerForSegmentation(**vit_args).to(device)
-    # if len(gpu_ids) > 1:
-    #     model = nn.DataParallel(model, device_ids=gpu_ids)
     
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -606,18 +607,17 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
 # Example of how to run the script with the task name included
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_name', type=str, required=True, help='Name of the task')
-    parser.add_argument('--resume', action='store_true', help="Use this flag to enable GPU usage")
-    parser.add_argument('--checkpoint_path', type=str, default=None, help='Checkpoint_path')
-    parser.add_argument('--data_dir', type=str, required=True, help='Directory containing the data')
-    parser.add_argument('--data_file', type=str, required=True, help='File containing the data paths')
-    parser.add_argument('--save_path', type=str, required=False, default='./results' ,help='Save Directory Path ')
-    parser.add_argument('--lr', type=float, required=True, help='Learning rate')
+    parser.add_argument('--exp_name', type=str, default='tmp', help='Name of the task')
+    parser.add_argument('--data_dir', type=str, default='./dataset/Task01_BrainTumour', help='Directory containing the data')
+    parser.add_argument('--data_file', type=str, default='./dataset.json', help='File containing the data paths')
+    parser.add_argument('--save_path', type=str, default='./results' ,help='Save Directory Path ')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
+    parser.add_argument('--lr', type=float, default=0.0003, help='Learning rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--image_size', type=str, required=True, action=TupleAction, help='Input size in the format "16,16,4"')
-    parser.add_argument('--patch_size', type=str, required=True, action=TupleAction, help='Patch size in the format "16,16,4"')
-    parser.add_argument('--gpu_ids', type=str, required=True, help='Comma-separated list of GPU IDs to use')
+    parser.add_argument('--image_size', type=str, default=(128,128,128), action=TupleAction, help='Input size in the format "16,16,4"')
+    parser.add_argument('--patch_size', type=str, default=(16,16,16), action=TupleAction, help='Patch size in the format "16,16,4"')
+    parser.add_argument('--resume', action='store_true', help="Use this flag to enable GPU usage")
+    parser.add_argument('--checkpoint_path', type=str, default='./results/Task01_BrainTumour_1/Best_Dice_Model_Task01_BrainTumour_1.pth', help='Checkpoint_path')
 
     args = parser.parse_args()
     
