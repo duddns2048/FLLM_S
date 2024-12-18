@@ -4,14 +4,13 @@
 SCRIPT_NAME="VIT_BASELINE.py"
 
 # 실행에 필요한 옵션 및 인자
-EXP_NAME="Task01_BrainTumour_recon"
-GPU_IDS="0"
+EXP_NAME="Task01_BrainTumour_recon2"
 DATA_DIR="./dataset/Task01_BrainTumour"
 DATA_FILE="./dataset.json"
 LR="1e-5"
 EPOCHS="100"
 BATCH_SIZE="32"
-IMAGE_SIZE="128,128,80"
+IMAGE_SIZE="128,128,128"
 PATCH_SIZE="16,16,16"
 
 # Python 명령 실행

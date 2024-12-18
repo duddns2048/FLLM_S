@@ -272,9 +272,9 @@ class VisionTransformerForSegmentation(nn.Module):
         super().__init__()
         self.image_size = image_size
         self.patch_size = patch_size
-        self.embed_size = embed_size
-        self.num_blocks = num_blocks
-        self.num_heads = num_heads
+        self.embed_size = embed_size # 64
+        self.num_blocks = num_blocks # 16
+        self.num_heads = num_heads # 4
         self.dropout = dropout
 
         heads = [SelfAttentionEncoderBlock(embed_size, num_heads, dropout) for _ in range(num_blocks)]
@@ -306,7 +306,7 @@ class VisionTransformerInput(nn.Module):
         x = self.i2p3d(x)
         x = self.pe(x)
         x = x + self.position_embed
-        return x
+        return x # [B, N_patch, patch_dim] [B,512,64]
 
 # Patch Embedding for 3D Input
 class PatchEmbedding3D(nn.Module):
@@ -612,7 +612,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_file', type=str, default='./dataset.json', help='File containing the data paths')
     parser.add_argument('--save_path', type=str, default='./results' ,help='Save Directory Path ')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
-    parser.add_argument('--lr', type=float, default=0.0003, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=0.00001, help='Learning rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--image_size', type=str, default=(128,128,128), action=TupleAction, help='Input size in the format "16,16,4"')
     parser.add_argument('--patch_size', type=str, default=(16,16,16), action=TupleAction, help='Patch size in the format "16,16,4"')
