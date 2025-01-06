@@ -270,7 +270,30 @@ class LLaMATransformer(nn.Module):
         h = self.norm(h)
 
         return h.float()
-
+    
+    def custom_streaming_load_state_dict(self, checkpoint_path, tail=False, strict=True):
+        """
+        스트리밍 방식으로 특정 레이어만 체크포인트에서 로드.
+        
+        Args:
+            checkpoint_path (str): 체크포인트 파일 경로.
+            i (str): 로드할 레이어 번호.
+            target_module (torch.nn.Module): 로드 대상 모듈.
+            strict (bool): state_dict 로드 시 strict 여부.
+        """
+        if tail:
+            import io
+            with open(checkpoint_path, "rb") as f:
+                buffer = io.BytesIO(f.read())  # 스트리밍 읽기
+                checkpoint = torch.load(buffer, map_location="cpu")
+                for i in range(self.first_layer, self.n_layers):
+                    # 필요한 키만 필터링
+                    layer_checkpoint_keys = [k for k in checkpoint.keys() if i in k]
+                    layer_checkpoint_keys = [k.replace(f'layers.{i}.', '') for k in layer_checkpoint_keys]
+                    layer_checkpoint = {k: checkpoint[f'layers.{i}.{k}'] for k in layer_checkpoint_keys}
+                    self.layers[i - self.first_layer].load_state_dict(
+                            layer_checkpoint, strict=strict)
+    
     def custom_load_state_dict(self, checkpoint, tail=False, strict=False):
         # self.load_state_dict(checkpoint, strict=strict)
 

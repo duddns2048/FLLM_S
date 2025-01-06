@@ -20,6 +20,9 @@ from pathlib import Path
 from torchsummary import summary
 from torch.autograd import Variable
 import logging
+import json
+from tqdm import tqdm
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -265,7 +268,8 @@ class MyDataset(Dataset):
     def __init__(self, data_dir, data_file, image_size, transforms=None, target_transforms=None):
         super(MyDataset, self).__init__()
         self.data_dir = data_dir
-        self.img_label_plist = get_img_label_paths(data_file)
+        self.data_file_dir = os.path.join(data_dir,data_file)
+        self.img_label_plist = get_img_label_paths(self.data_file_dir)
         self.input_shape = image_size
         self.transforms = transforms
         self.target_transforms = target_transforms
@@ -374,7 +378,7 @@ class VisionTransformerInput(nn.Module):
 
         # Load llama checkpoint for the encoder layer
         model_name = "llama"
-        llm_path = "./Llama-3.1-8b"
+        llm_path = "../pyllama/pyllama_data/Llama3.1-8B/"
         if 'llama' in model_name:
             logger.info("Loading LLaMA checkpoints")
             start_time = time.time()
@@ -382,6 +386,7 @@ class VisionTransformerInput(nn.Module):
             ckpt_path = checkpoints[0]
             checkpoint = torch.load(ckpt_path, map_location="cpu")
             self.llm.custom_load_state_dict(checkpoint, tail=True, strict=False)
+            # self.llm.custom_streaming_load_state_dict(ckpt_path, tail=True, strict=False)
             logger.info(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         for param in self.llm.parameters():
@@ -460,31 +465,49 @@ class VisionTransformerArgs:
     dropout: float = 0.2
 
 # Function to generate save path with the task name
-def generate_save_path(task_name, patch_size, batch_size, lr, epoch=None):
-    base_name = f"{task_name}_{patch_size}_{batch_size}_{lr}"
-    if epoch is not None:
-        return f"./predictions/{base_name}_epoch_{epoch}.png"
-    return f"./new_model_{base_name}.pth"
+def generate_save_path(save_path, exp_name,  epoch, mode =None):
+    if mode == 'Loss':
+        output_path = os.path.join(save_path, f'Best_Loss_Model_{exp_name}.pth')
+    elif mode == 'Dice':
+        output_path = os.path.join(save_path, f'Best_Dice_Model_{exp_name}.pth')
+    elif mode == 'last':
+        output_path = os.path.join(save_path, f'last_model_{exp_name}.pth')
+    elif mode == 'pred':
+        output_path = os.path.join(save_path, 'predictions')
+        os.makedirs(output_path, exist_ok=True)
+    else:
+        raise ValueError("Invalid mode. Please use 'Loss', 'Dice', 'last' or 'pred'.")
+    return output_path
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16)):
-    os.makedirs(save_path, exist_ok=True)
-    save_path = os.path.join(save_path, exp_name)
-    os.makedirs(save_path, exist_ok=True)
+def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, batch_size=2, patch_size=(16,16,4), image_size=(64,64,16), resume=False, checkpoint_path=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    os.makedirs(os.path.join(save_path), exist_ok=True)
+    os.makedirs(os.path.join(save_path, exp_name), exist_ok=True)
+    save_path = os.path.join(save_path, exp_name)
+    
+    args_dict = vars(args)
+    with open(os.path.join(save_path,'args.json'), 'w') as json_file:
+        json.dump(args_dict, json_file, indent=4)
+        
+    command_line_arguments = ' '.join(sys.argv)
+    with open(os.path.join(save_path, './train_command.txt'), 'w') as f:
+        f.write(command_line_arguments)
 
     # Dataset initialization (Add your dataset code here)
     dataset = MyDataset(data_dir, data_file, image_size)
 
     # Split dataset into training and validation sets
+    generator = torch.Generator().manual_seed(2024)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers= 4,pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers= 4,pin_memory=True)
 
     # Instantiate VisionTransformerForSegmentation (Add your model initialization code here)
     vit_args = dataclasses.asdict(VisionTransformerArgs(image_size=image_size,patch_size=patch_size))
@@ -495,16 +518,30 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
 
     best_loss = float('inf')
+    best_dice = -float('inf')
+    start_epoch = 0
 
     # Initialize lists to store loss and Dice scores
     epoch_data = []
+    
+    if resume:
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_loss = checkpoint['best_loss']
+        best_dice = checkpoint['best_dice']
+        # epoch_data = load_training_results(csv_path)
+        # epoch_data = epoch_data[:start_epoch]
+        epoch_data = checkpoint['epoch_data']
+        print(f"Resuming training from epoch {start_epoch} with best loss {best_loss:.4f}")
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0.0
         total_dice = 0.0
 
-        for batch in train_dataloader:
+        for batch in tqdm(train_dataloader, total=len(train_dataloader), desc=f'Training Epoch {epoch}'):
             video, target = batch
             video, target = video.to(device), target.to(device)
 
@@ -531,7 +568,7 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
         val_loss = 0.0
         val_dice = 0.0
         with torch.no_grad():
-            for val_batch in val_dataloader:
+            for val_batch in tqdm(val_dataloader, total=len(val_dataloader), desc=f'Validation Epoch {epoch}'):
                 val_video, val_target = val_batch
                 val_video, val_target = val_video.to(device), val_target.to(device)
                 val_target = val_target.clone().detach()
@@ -565,76 +602,60 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
         scheduler.step(epoch_loss)
         current_lr = scheduler.optimizer.param_groups[0]['lr']
         logger.info(f"Learning Rate: {current_lr:.6f}")
-
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            state_dict = {
+        
+        state_dict = {
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': epoch,
-                'best_loss': best_loss
+                'best_loss': best_loss,
+                'best_dice': best_dice,
+                'epoch_data' : epoch_data
             }
-            model_save_path = generate_save_path(exp_name, patch_size, batch_size, lr)
-            torch.save(state_dict, model_save_path)
-            logger.info(f"Model saved at {model_save_path} (Best Loss: {best_loss:.4f})")
+        last_model_save_path = generate_save_path(save_path, exp_name, epoch, 'last')
+        torch.save(state_dict, last_model_save_path)
+        logger.info(f"Last Model saved at {last_model_save_path}")
+
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            # model_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch)
+            best_loss_model_save_path = generate_save_path(save_path, exp_name, epoch, 'Loss')
+            torch.save(state_dict, best_loss_model_save_path)
+            logger.info(f"Best Loss Model saved at {best_loss_model_save_path} (Best Loss: {best_loss:.4f})")
+
+        if epoch_dice > best_dice:
+            best_dice = epoch_dice
+            # model_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch)
+            best_dice_model_save_path = generate_save_path(save_path, exp_name, epoch, 'Dice')
+            torch.save(state_dict, best_dice_model_save_path)
+            logger.info(f"Best Dice Model saved at {best_dice_model_save_path} (Best Doss: {best_dice:.4f})")
 
         if epoch % 10 == 0:
             with torch.no_grad():
-                video, target = next(iter(train_dataloader))
-                video, target = video.to(device), target.to(device)
-                output = model(video.float())
-                prediction_save_path = generate_save_path(exp_name, patch_size, batch_size, lr, epoch)
-                save_predictions(epoch, video, target, output, prediction_save_path)
-
+                for i in range(5):
+                    video, target = next(iter(train_dataloader))
+                    video, target = video.to(device), target.to(device)
+                    output = model(video.float())
+                    # prediction_save_path = _generate_save_path(save_path, exp_name, patch_size, batch_size, lr, epoch, True)
+                    prediction_save_path = generate_save_path(save_path, exp_name, epoch, 'pred')
+                    save_predictions(epoch, i+1, video, target, output, prediction_save_path)
     # Convert the epoch data to a DataFrame
-    df = pd.DataFrame(epoch_data, columns=['Epoch', 'Train Loss', 'Val Loss', 'Train Dice', 'Val Dice'])
-
-    # Save the DataFrame to a CSV file
-    csv_path = os.path.join(save_path, f'{exp_name}_training_results.csv')
-    df.to_csv(csv_path, index=False)
     logger.info(f"Training results saved to {csv_path}")
-
-    # Plot the training and validation loss
-    plt.figure(figsize=(10, 5))
-    plt.plot(df['Epoch'], df['Train Loss'], label='Train Loss')
-    plt.plot(df['Epoch'], df['Val Loss'], label='Val Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
-    plt.legend()
-    plt.grid(True)
-    loss_plot_path = os.path.join(save_path, f'{exp_name}_loss_curve.png')
-    plt.savefig(loss_plot_path)
-    logger.info(f"Loss curve saved to {loss_plot_path}")
-    plt.show()
-
-    # Plot the training and validation Dice scores
-    plt.figure(figsize=(10, 5))
-    plt.plot(df['Epoch'], df['Train Dice'], label='Train Dice')
-    plt.plot(df['Epoch'], df['Val Dice'], label='Val Dice')
-    plt.xlabel('Epoch')
-    plt.ylabel('Dice Score')
-    plt.title('Training and Validation Dice Score')
-    plt.legend()
-    plt.grid(True)
-    dice_plot_path = os.path.join(save_path, f'{exp_name}_dice_curve.png')
-    plt.savefig(dice_plot_path)
-    logger.info(f"Dice curve saved to {dice_plot_path}")
-    plt.show()
 
 
 # Example of how to run the script with the task name included
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_name', type=str, required=True, help='Name of the task')
-    parser.add_argument('--data_dir', type=str, required=True, help='Directory containing the data')
-    parser.add_argument('--data_file', type=str, required=True, help='File containing the data paths')
-    parser.add_argument('--save_path', type=str, required=False, default='./results' ,help='Save Directory Path ')
-    parser.add_argument('--lr', type=float, required=True, help='Learning rate')
+    parser.add_argument('--exp_name', type=str, default='ViT_LLAMA', help='Name of the task')
+    parser.add_argument('--data_dir', type=str, default='./dataset/Task01_BrainTumour', help='Directory containing the data')
+    parser.add_argument('--data_file', type=str, default='./dataset.json', help='File containing the data paths')
+    parser.add_argument('--save_path', type=str, default='./results' ,help='Save Directory Path ')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
-    parser.add_argument('--image_size', type=str, required=True, action=TupleAction, help='Input size in the format "16,16,4"')
-    parser.add_argument('--patch_size', type=str, required=True, action=TupleAction, help='Patch size in the format "16,16,4"')
+    parser.add_argument('--lr', type=float, default=0.00001, help='Learning rate')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    parser.add_argument('--image_size', type=str, default=(128,128,128), action=TupleAction, help='Input size in the format "16,16,4"')
+    parser.add_argument('--patch_size', type=str, default=(16,16,16), action=TupleAction, help='Patch size in the format "16,16,4"')
+    parser.add_argument('--resume', action='store_true', help="Use this flag to enable GPU usage")
+    parser.add_argument('--checkpoint_path', type=str, default='./results/Task01_BrainTumour_1/Best_Dice_Model_Task01_BrainTumour_1.pth', help='Checkpoint_path')
 
     args = parser.parse_args()
 
@@ -648,6 +669,8 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         image_size=args.image_size,
         patch_size=args.patch_size,
+        resume = args.resume,
+        checkpoint_path = args.checkpoint_path
     )
 
 # python VIT_LLAMA.py --data_dir /path/to/data --data_file /path/to/data_file.txt --image_size 128,128,128 --patch_size 16,16,16 --epochs 100 --batch_size 4 --lr 3e-4 --task_name 'Task01_BrainTumour'

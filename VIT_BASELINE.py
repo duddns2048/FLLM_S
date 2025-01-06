@@ -227,7 +227,7 @@ class MyDataset(Dataset):
         img_x = np.expand_dims(img_x, 0)  # Adding batch dimension
 
         img_y = resize_3d(img_y, self.input_shape, 1)
-        img_y[img_y > 1] = 0
+        img_y[img_y > 1] = 1
         
         if self.transforms is not None:
             img_x = self.transforms(img_x)
@@ -284,7 +284,7 @@ class VisionTransformerForSegmentation(nn.Module):
             nn.Sequential(*heads),
             OutputProjection(image_size, patch_size, embed_size, out_channels),
             nn.Sigmoid()
-            #nn.Softmax(dim=1)
+            # nn.Softmax(dim=1)
         )
 
     def forward(self, x):
@@ -426,19 +426,20 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     dataset = MyDataset(data_dir, data_file, image_size)
 
     # Split dataset into training and validation sets
-    # torch.manual_seed(2024)
+    generator = torch.Generator().manual_seed(2024)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers= 4,pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers= 4,pin_memory=True)
 
     # Instantiate VisionTransformerForSegmentation (Add your model initialization code here)
     vit_args = dataclasses.asdict(VisionTransformerArgs(image_size=image_size,patch_size=patch_size))
     model = VisionTransformerForSegmentation(**vit_args).to(device)
     
-    criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10)
     
@@ -574,34 +575,6 @@ def train_model(exp_name, data_dir, data_file, save_path, epochs=100, lr=0.01, b
     # df.to_csv(csv_path, index=False)
     
     logger.info(f"Training results saved to {csv_path}")
-
-    # Plot the training and validation loss
-    plt.figure(figsize=(10, 5))
-    plt.plot(df['Epoch'], df['Train Loss'], label='Train Loss')
-    plt.plot(df['Epoch'], df['Val Loss'], label='Val Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
-    plt.legend()
-    plt.grid(True)
-    loss_plot_path = os.path.join(save_path, f'{exp_name}_loss_curve.png')
-    plt.savefig(loss_plot_path)
-    logger.info(f"Loss curve saved to {loss_plot_path}")
-    plt.show()
-
-    # Plot the training and validation Dice scores
-    plt.figure(figsize=(10, 5))
-    plt.plot(df['Epoch'], df['Train Dice'], label='Train Dice')
-    plt.plot(df['Epoch'], df['Val Dice'], label='Val Dice')
-    plt.xlabel('Epoch')
-    plt.ylabel('Dice Score')
-    plt.title('Training and Validation Dice Score')
-    plt.legend()
-    plt.grid(True)
-    dice_plot_path = os.path.join(save_path, f'{exp_name}_dice_curve.png')
-    plt.savefig(dice_plot_path)
-    logger.info(f"Dice curve saved to {dice_plot_path}")
-    plt.show()
 
 
 # Example of how to run the script with the task name included
